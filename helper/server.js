@@ -9,7 +9,7 @@ const { StremioServer } = require('./lib/stremio');
 const { JobManager } = require('./lib/jobs');
 const resolver = require('./lib/resolver');
 
-const VERSION = '0.1.0';
+const VERSION = '0.3.0';
 const LOG_PATH = path.join(DATA_DIR, 'helper.log');
 
 const cfg = loadConfig();

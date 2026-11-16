@@ -112,3 +112,28 @@ All endpoints except `/api/ping` need header `X-Prefetch-Token`.
   go through the Stremio server's torrent downloader.
 - Prefetching shares bandwidth with whatever you're watching. `maxActive` in
   `config.json` limits how many torrents download at once (default 2).
+- Windows only for now: the start/stop scripts expect Stremio 4 in its default install
+  location (`%LOCALAPPDATA%\Programs\LNV\Stremio-4`).
+
+## Disclaimer
+
+This is an unofficial personal project. It is not affiliated with, endorsed by, or
+supported by Stremio or any addon developer.
+
+- **Use at your own risk.** The software is provided "as is", without warranty of any
+  kind. The author is not responsible for any damage, data loss, or other consequences
+  of using it.
+- **You are responsible for what you download.** This tool does not host, index, or
+  provide any content. It only tells your own Stremio server to download streams that
+  your installed addons already offer. Make sure you have the right to access that
+  content where you live.
+- **BitTorrent is public.** While a torrent downloads, your IP address is visible to
+  other peers, and the Stremio server may upload parts of the file to them. Prefetching
+  downloads whole files ahead of time, so you take part in swarms for longer than when
+  you just stream.
+- **Keep the helper on your local network.** It is protected by a token, but it is not
+  meant to be exposed to the internet. Don't forward port 11480 on your router.
+
+## License
+
+[MIT](LICENSE)
