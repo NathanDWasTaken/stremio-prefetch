@@ -9,7 +9,7 @@ const { StremioServer } = require('./lib/stremio');
 const { JobManager } = require('./lib/jobs');
 const resolver = require('./lib/resolver');
 
-const VERSION = '0.3.0';
+const VERSION = '0.4.0';
 const LOG_PATH = path.join(DATA_DIR, 'helper.log');
 
 const cfg = loadConfig();
@@ -74,7 +74,39 @@ async function status() {
   }
   const counts = {};
   for (const j of jobs.list()) counts[j.status] = (counts[j.status] || 0) + 1;
-  return { ok: true, version: VERSION, stremio, counts, maxActive: cfg.maxActive };
+  return {
+    ok: true,
+    version: VERSION,
+    stremio,
+    counts,
+    maxActive: cfg.maxActive,
+    deleteWatched: cfg.deleteWatched,
+    deleteWatchedAfterMin: cfg.deleteWatchedAfterMin,
+  };
+}
+
+const LIVE_STATUSES = ['queued', 'starting', 'active', 'done'];
+
+// Picks the stream to match new episodes against. Sources, best first:
+//  1. prefer.source "playing": the stream that is playing right now (player page).
+//  2. whichever is more recent of
+//     - prefer.source "lastWatched": the stream Stremio last played for this title
+//       (the extension reads it from Stremio's own "last used stream" storage), and
+//     - the most recently queued prefetch job of this title.
+//  3. nothing: pickStream falls back to the most-seeded stream at defaultResolution.
+function referenceStream(metaId, given) {
+  const fromGiven = given && (given.infoHash || given.bingeGroup) ? given : null;
+  if (fromGiven && fromGiven.source === 'playing') return { prefer: fromGiven, basis: 'the stream that is playing' };
+  const job = jobs
+    .list()
+    .filter((j) => j.metaId === metaId && j.infoHash && !['failed', 'removing'].includes(j.status))
+    .sort((a, b) => b.addedAt - a.addedAt)[0];
+  const fromJob = job && { infoHash: job.infoHash, bingeGroup: job.bingeGroup, resolution: job.resolution, at: job.addedAt };
+  if (fromGiven && (!fromJob || (fromGiven.at || 0) >= fromJob.at)) {
+    return { prefer: fromGiven, basis: 'the stream you last watched' };
+  }
+  if (fromJob) return { prefer: fromJob, basis: 'earlier prefetches of this title' };
+  return { prefer: {}, basis: null };
 }
 
 // Resolves episodes/movies to torrent streams through the user's addons and queues them.
@@ -82,7 +114,8 @@ async function status() {
 async function queueFromAddons(body) {
   const { type, metaId, addons, select } = body;
   if (!type || !metaId || !select) throw new HttpError(400, 'type, metaId and select are required');
-  let prefer = { ...(body.prefer || {}) };
+  const ref = referenceStream(metaId, body.prefer);
+  let prefer = { ...ref.prefer };
 
   let meta = null;
   let videos;
@@ -98,6 +131,17 @@ async function queueFromAddons(body) {
   const results = [];
   for (const v of videos) {
     const label = resolver.episodeLabel(meta, v);
+    // Already prefetched (or prefetching): keep it, and match the next episodes to it.
+    const existing = jobs.list().find((j) => j.metaId === metaId && j.videoId === v.id && LIVE_STATUSES.includes(j.status));
+    if (existing) {
+      results.push({ videoId: v.id, label, ok: true, added: false, jobId: existing.id, stream: existing.streamTitle });
+      prefer = {
+        infoHash: existing.infoHash,
+        bingeGroup: existing.bingeGroup || prefer.bingeGroup,
+        resolution: existing.resolution || prefer.resolution,
+      };
+      continue;
+    }
     try {
       const streams = await resolver.getStreams(type, v.id, addons);
       const pick = resolver.pickStream(streams, prefer, cfg.defaultResolution);
@@ -110,6 +154,8 @@ async function queueFromAddons(body) {
         fileIdx: pick.fileIdx,
         sources: pick.sources,
         fileMustInclude: pick.fileMustInclude,
+        bingeGroup: pick.bingeGroup,
+        resolution: pick.resolution,
         season: v.season,
         episode: v.episode,
         type,
@@ -125,7 +171,10 @@ async function queueFromAddons(body) {
       results.push({ videoId: v.id, label, ok: false, reason: e.message });
     }
   }
-  return { results };
+  const basis = ref.basis
+    ? `matched to ${ref.basis}`
+    : `no earlier stream to match: picked the most-seeded ${cfg.defaultResolution} stream`;
+  return { results, basis };
 }
 
 // Directly queue known torrent streams (e.g. one picked from Stremio's stream list).
@@ -169,11 +218,18 @@ async function route(req, res) {
   if (req.headers['x-prefetch-token'] !== cfg.token) throw new HttpError(401, 'Invalid or missing token');
 
   if (req.method === 'GET' && p === '/api/status') return send(res, 200, await status());
-  if (req.method === 'GET' && p === '/api/jobs') return send(res, 200, { jobs: jobs.list() });
+  if (req.method === 'GET' && p === '/api/jobs') {
+    return send(res, 200, { jobs: jobs.list().filter((j) => j.status !== 'removing') });
+  }
   if (req.method === 'POST' && p === '/api/jobs') return send(res, 200, await queueItems(await readBody(req)));
   if (req.method === 'POST' && p === '/api/queue') return send(res, 200, await queueFromAddons(await readBody(req)));
+  if (req.method === 'POST' && p === '/api/jobs/watched') {
+    const body = await readBody(req);
+    const ids = (x) => (Array.isArray(x) ? x.map(String) : []);
+    return send(res, 200, { ok: true, changed: jobs.setWatched(ids(body.watched), ids(body.unwatched)) });
+  }
   if (req.method === 'POST' && p === '/api/jobs/clear') {
-    jobs.clearFinished();
+    jobs.clearFailed();
     return send(res, 200, { ok: true });
   }
   if (req.method === 'POST' && p === '/api/meta') {

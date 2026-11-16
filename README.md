@@ -26,10 +26,19 @@ it destroys a torrent's engine 120 s after its last stream closes. The helper:
 The finished file stays in Stremio's cache. When you press play, Stremio reads it from
 disk instead of downloading it.
 
-To pick streams automatically (season / next episode), the helper queries your installed
-addons (the extension sends their URLs from your Stremio profile) and picks:
-the same torrent (season packs) → the same `bingeGroup` (same release) → the most-seeded
-stream at the preferred resolution.
+To pick streams automatically (everything except right-clicking a specific stream), the
+helper queries your installed addons (the extension sends their URLs from your Stremio
+profile) and matches each episode to a reference stream:
+
+1. the stream that is playing (player page / auto-prefetch), else
+2. whichever is newer: the stream Stremio last played for this title (its "Last used"
+   stream, read from Stremio's local storage) or the last prefetch of this title, else
+3. nothing: the most-seeded stream at `defaultResolution` (1080p).
+
+Against the reference it prefers the same torrent (season packs) → the same `bingeGroup`
+(same release, e.g. Torrentio's `1080p|WEBRip|x265`) → the most-seeded stream at the same
+resolution. Each picked episode becomes the reference for the next one, and episodes that
+are already prefetched are kept as they are.
 
 ## Setup
 
@@ -79,17 +88,32 @@ Saving asks Chrome for permission to reach that address.
 
 - **Stream lists**: right-click a torrent stream → **Prefetch on server** to prefetch
   exactly that stream. Streams that are prefetching or ready get a small status tag.
-- **Episode lists**: right-click an episode → **Prefetch episode**, **Prefetch unwatched
-  until end of season** or **Prefetch unwatched in season N**. Watched state comes from
-  your Stremio library (stored in the browser), decoded the same way stremio-core does.
-- **Download icon in the top bar** (next to fullscreen / profile) opens a dropdown:
-  - movie page: prefetch the best stream
-  - series page: whole season, selected episode, selected → end of season, next 3
-  - player: prefetch the next episode now
-  - progress for everything queued
+- **Episode lists**: right-click an episode → **Prefetch episode**. Episodes that are
+  prefetching or ready get a status tag. Watched state comes from your Stremio library
+  (stored in the browser), decoded the same way stremio-core does.
+- **Button next to Play / Resume**: on a series, **Prefetch S*N*** downloads the unwatched
+  episodes of the season shown in the episode list (and shows progress); on an episode's
+  page (with its stream list), **Prefetch episode** downloads that episode; on a movie,
+  **Prefetch** downloads the movie.
+- **Download icon in the top bar** (next to fullscreen / profile, on every page) opens a
+  dropdown with all downloads, grouped per title. In the player it also has
+  **Prefetch next episode now**.
 - **Auto-prefetch**: while you watch a series from a torrent, the next episode(s) are
   queued after 2 minutes (configurable).
-- **Toolbar popup**: all downloads, retry/remove, cache-size warning.
+- **Toolbar popup**: all downloads grouped per title, retry, cache-size warning.
+- **✕ on a download** removes it *and* deletes its file from Stremio's cache. A download
+  is listed exactly as long as its file is kept: removed items and auto-deleted watched
+  items disappear from the list. The file is deleted once Stremio has released the
+  torrent (~2 minutes after the last stream from it closes).
+- **Watched cleanup**: while Stremio Web is open, the extension checks your library
+  (synced from your account, so this includes things watched on other devices) and tells
+  the helper which prefetched episodes / movies are watched. The helper deletes those files
+  from Stremio's cache (`stremio-cache/{infoHash}/{fileIdx}`) 60 minutes later, and never
+  while that torrent is playing or downloading. Unfinished downloads of watched items stop
+  right away. Marking something unwatched within the 60 minutes cancels the deletion.
+  Prefetching a removed item again downloads it again, and it is deleted again 60 minutes
+  after the next check finds it watched. Configure with `deleteWatched` and
+  `deleteWatchedAfterMin` in `config.json`. Only files queued through this tool are deleted.
 
 ## Helper API
 
@@ -100,11 +124,12 @@ All endpoints except `/api/ping` need header `X-Prefetch-Token`.
 | GET | `/api/status` | helper + Stremio server status |
 | GET | `/api/jobs` | queue |
 | POST | `/api/jobs` | `{ items: [{ infoHash, fileIdx?, sources?, type?, metaId?, videoId?, label? }], addons? }` |
-| POST | `/api/queue` | `{ type, metaId, addons, prefer?, select }`, where `select` is `{ videoIds }`, `{ season, fromVideoId? }` or `{ nextAfter, count }` |
+| POST | `/api/queue` | `{ type, metaId, addons, prefer?, select }`, where `select` is `{ videoIds }`, `{ season, fromVideoId? }` or `{ nextAfter, count }`, and `prefer` is `{ infoHash?, bingeGroup?, resolution?, source: "playing" \| "lastWatched", at }` |
 | POST | `/api/meta` | `{ type, id, addons? }` |
 | POST | `/api/jobs/:id/retry` | |
-| DELETE | `/api/jobs/:id` | stops prefetching (Stremio drops the engine after ~2 min) |
-| POST | `/api/jobs/clear` | removes done/failed jobs |
+| DELETE | `/api/jobs/:id` | stops prefetching and deletes the file from Stremio's cache (once Stremio drops the engine, ~2 min) |
+| POST | `/api/jobs/watched` | `{ watched: [jobId], unwatched: [jobId] }`, sent by the extension |
+| POST | `/api/jobs/clear` | removes failed jobs |
 
 ## Limitations
 

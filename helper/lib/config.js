@@ -22,6 +22,10 @@ const DEFAULTS = {
   // How long to wait for torrent metadata before giving up on an attempt.
   createTimeoutSec: 120,
   maxAttempts: 3,
+  // Delete a prefetched file from Stremio's cache once the extension reports it as
+  // watched, after a grace period (to rewatch the ending or undo "mark as watched").
+  deleteWatched: true,
+  deleteWatchedAfterMin: 60,
   // Used when picking a stream automatically and there is nothing to match against.
   defaultResolution: '1080p',
   // Used for metadata when no installed addon provides it.

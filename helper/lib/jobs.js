@@ -2,11 +2,22 @@
 //
 // Lifecycle: queued -> starting -> active -> done
 //                         \-> (retry) queued -> ... -> failed
+//
+// A job exists exactly as long as its file is (or is being) prefetched. Removing a job
+// (the ✕ button) and deleting its file from Stremio's cache are the same thing:
+//  - remove(): stops downloading (status "removing", hidden from /api/jobs), then the file
+//    is deleted and the job dropped.
+//  - Watched cleanup: the extension reports jobs whose episode/movie is watched in the
+//    user's Stremio library. Unfinished jobs stop downloading (status "watched"). After
+//    cfg.deleteWatchedAfterMin the file is deleted and the job dropped.
+// Files are only deleted while Stremio has no engine for that torrent, so nothing playing
+// is touched. Queuing a removed / watched item again downloads it again.
 
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { DATA_DIR } = require('./config');
+const { IH_RE } = require('./stremio');
 
 const JOBS_PATH = path.join(DATA_DIR, 'jobs.json');
 const VIDEO_EXT = /\.(mkv|mp4|avi|m4v|mov|wmv|webm|ts|m2ts)$/i;
@@ -30,6 +41,8 @@ class JobManager {
     try {
       this.jobs = JSON.parse(fs.readFileSync(JOBS_PATH, 'utf8'));
     } catch (_) {}
+    // "deleted" jobs were kept by earlier versions after their file was deleted.
+    this.jobs = this.jobs.filter((j) => j.status !== 'deleted');
     for (const j of this.jobs) {
       if (j.status === 'starting' || j.status === 'active') j.status = 'queued';
     }
@@ -58,9 +71,11 @@ class JobManager {
       (j) => j.key === key || (Number.isInteger(item.fileIdx) && j.infoHash === item.infoHash && j.fileIdx === item.fileIdx),
     );
     if (existing) {
-      if (existing.status === 'failed') {
-        Object.assign(existing, { status: 'queued', attempts: 0, error: null, retryAt: null });
+      if (['failed', 'watched', 'removing'].includes(existing.status)) {
+        Object.assign(existing, { status: 'queued', attempts: 0, error: null, retryAt: null, progress: 0 });
+        Object.assign(existing, { watchedAt: null, deleteAt: null, deleteError: null });
         this.save();
+        setImmediate(() => this.tick());
       }
       return { job: existing, added: false };
     }
@@ -71,6 +86,9 @@ class JobManager {
       fileIdx: Number.isInteger(item.fileIdx) ? item.fileIdx : null,
       sources: item.sources || [],
       fileMustInclude: item.fileMustInclude || [],
+      // Release info, used to pick the same release for later episodes.
+      bingeGroup: item.bingeGroup || null,
+      resolution: item.resolution || null,
       season: Number.isFinite(item.season) ? item.season : null,
       episode: Number.isFinite(item.episode) ? item.episode : null,
       type: item.type || null,
@@ -96,16 +114,91 @@ class JobManager {
     return { job, added: true };
   }
 
+  // Stops prefetching and deletes the file from Stremio's cache. The job is dropped
+  // right away when nothing was downloaded yet, else once the file is deleted.
   remove(id) {
-    const before = this.jobs.length;
-    this.jobs = this.jobs.filter((j) => j.id !== id);
+    const job = this.jobs.find((j) => j.id === id);
+    if (!job) return false;
+    const hasFile = Number.isInteger(job.fileIdx) && (job.startedAt || job.progress > 0 || job.status === 'starting');
+    if (!hasFile) {
+      this.jobs = this.jobs.filter((j) => j !== job);
+      this.log(`removed ${job.label}`);
+    } else if (job.status !== 'removing') {
+      Object.assign(job, { status: 'removing', removeAt: Date.now(), downloadSpeed: 0 });
+      this.log(`removing ${job.label}, deleting its file once Stremio releases the torrent`);
+      setImmediate(() => this.tick());
+    }
     this.save();
-    return this.jobs.length !== before;
+    return true;
   }
 
-  clearFinished() {
-    this.jobs = this.jobs.filter((j) => j.status !== 'done' && j.status !== 'failed');
-    this.save();
+  // Removes failed jobs (they have no complete file).
+  clearFailed() {
+    for (const j of this.jobs.filter((x) => x.status === 'failed')) this.remove(j.id);
+  }
+
+  // Called by the extension with job ids whose video is (un)watched in the Stremio library.
+  setWatched(watchedIds, unwatchedIds) {
+    const now = Date.now();
+    let changed = 0;
+    for (const job of this.jobs) {
+      if (job.status === 'removing') continue;
+      if (watchedIds.includes(job.id) && !job.watchedAt) {
+        job.watchedAt = now;
+        job.deleteAt = now + this.cfg.deleteWatchedAfterMin * 60000;
+        if (['queued', 'starting', 'active', 'failed'].includes(job.status)) job.status = 'watched';
+        this.log(`watched ${job.label}${this.cfg.deleteWatched ? `, deleting after ${new Date(job.deleteAt).toISOString()}` : ''}`);
+        changed++;
+      } else if (unwatchedIds.includes(job.id) && job.watchedAt) {
+        Object.assign(job, { watchedAt: null, deleteAt: null, deleteError: null });
+        if (job.status === 'watched') Object.assign(job, { status: 'queued', attempts: 0, error: null, retryAt: null });
+        this.log(`unwatched ${job.label}, not deleting it`);
+        changed++;
+      }
+    }
+    if (changed) {
+      this.save();
+      setImmediate(() => this.tick());
+    }
+    return changed;
+  }
+
+  // Deletes the cached files of removed jobs, and of watched jobs whose grace period is
+  // over, then drops those jobs.
+  async cleanupFiles() {
+    const now = Date.now();
+    const due = this.jobs.filter(
+      (j) => j.status === 'removing' || (this.cfg.deleteWatched && j.watchedAt && (j.deleteAt || 0) <= now),
+    );
+    if (!due.length) return;
+    const engines = await this.server.activeEngines();
+    if (!this.cacheDirPath) this.cacheDirPath = await this.server.cacheDir();
+    for (const job of due) {
+      if (engines.has(job.infoHash)) continue; // playing or downloading; try again later
+      let freed = 0;
+      if (Number.isInteger(job.fileIdx) && IH_RE.test(job.infoHash)) {
+        const dir = path.join(this.cacheDirPath, job.infoHash);
+        const file = path.join(dir, String(job.fileIdx));
+        try {
+          freed = fs.statSync(file).size;
+          fs.unlinkSync(file);
+        } catch (e) {
+          if (e.code !== 'ENOENT') {
+            if (job.deleteError !== e.message) this.log(`delete ${job.label} failed (will retry): ${e.message}`);
+            job.deleteError = e.message;
+            this.save();
+            continue;
+          }
+        }
+        try {
+          if (!fs.readdirSync(dir).length) fs.rmdirSync(dir);
+        } catch (_) {}
+      }
+      this.jobs = this.jobs.filter((j) => j !== job);
+      const why = job.status === 'removing' ? 'removed' : 'watched';
+      this.log(`deleted ${job.label} (${why})${freed ? `, freed ${(freed / 1024 ** 2).toFixed(0)} MB` : ''}`);
+      this.save();
+    }
   }
 
   retry(id) {
@@ -137,6 +230,7 @@ class JobManager {
           this.start(job); // runs in the background; metadata can take a while
         }
       }
+      await this.cleanupFiles().catch((e) => this.log(`cache cleanup: ${e.message}`));
     } finally {
       this.ticking = false;
     }
@@ -153,7 +247,7 @@ class JobManager {
         { sources: job.sources, guess, fileMustInclude: job.fileMustInclude },
         this.cfg.createTimeoutSec * 1000,
       );
-      if (!this.jobs.includes(job)) return; // removed while starting
+      if (!this.jobs.includes(job) || job.status !== 'starting') return; // removed or watched while starting
       const files = stats.files || [];
       let idx = job.fileIdx;
       if (!Number.isInteger(idx) || !files[idx]) {
@@ -167,7 +261,7 @@ class JobManager {
       job.startedAt = job.startedAt || Date.now();
       this.log(`started ${job.label} -> ${job.fileName}`);
     } catch (e) {
-      if (!this.jobs.includes(job)) return;
+      if (!this.jobs.includes(job) || job.status !== 'starting') return;
       job.attempts++;
       job.error = e.message;
       if (job.attempts >= this.cfg.maxAttempts) {

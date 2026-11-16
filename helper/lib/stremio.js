@@ -8,6 +8,8 @@
 //   so we briefly re-open the stream every touchIntervalSec to keep it alive.
 // - GET /{infoHash}/{fileIdx}/stats.json reports streamProgress (0..1).
 
+const path = require('path');
+
 const IH_RE = /^[a-f0-9]{40}$/;
 
 function normalizeSources(sources, infoHash) {
@@ -74,6 +76,21 @@ class StremioServer {
     const res = await fetch(`${this.baseUrl}/settings`, { signal: AbortSignal.timeout(5000) });
     if (!res.ok) throw new Error(`settings failed: HTTP ${res.status}`);
     return (await res.json()).values;
+  }
+
+  // Info hashes of all torrent engines that currently exist (playing or downloading).
+  async activeEngines() {
+    const res = await fetch(`${this.baseUrl}/stats.json`, { signal: AbortSignal.timeout(10000) });
+    if (!res.ok) throw new Error(`stats failed: HTTP ${res.status}`);
+    return new Set(Object.keys((await res.json()) || {}).map((ih) => ih.toLowerCase()));
+  }
+
+  // Torrent data lives in {cacheRoot}/stremio-cache/{infoHash}/{fileIdx}, one file per
+  // torrent file (see enginefs.getCachePath in Stremio's server.js).
+  async cacheDir() {
+    const { cacheRoot } = await this.settings();
+    if (!cacheRoot) throw new Error('Stremio server did not report cacheRoot');
+    return path.join(cacheRoot, 'stremio-cache');
   }
 }
 

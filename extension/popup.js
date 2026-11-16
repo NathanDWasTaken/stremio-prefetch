@@ -5,6 +5,12 @@ function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
 
+document.head.insertAdjacentHTML('beforeend', `<style>${SP.JOBS_CSS}</style>`);
+
+// Groups the user opened / closed, kept across refreshes.
+const expanded = new Map();
+document.addEventListener('toggle', (e) => e.target.dataset.group && expanded.set(e.target.dataset.group, e.target.open), true);
+
 async function load() {
   const settings = await SP.getSettings();
   if (!settings.helperUrl || !settings.token) {
@@ -30,19 +36,7 @@ async function load() {
 
   const r = await api('GET', '/api/jobs');
   if (!r.ok) return;
-  const jobs = r.data.jobs.slice().reverse();
-  $('jobs').innerHTML = jobs.length
-    ? jobs
-        .map(
-          (j) => `<div class="job ${j.status}" title="${esc(j.fileName || j.streamTitle || '')}">
-            <div class="top"><span class="label">${esc(j.label)}</span>
-              <span>${j.status === 'failed' ? `<button data-retry="${j.id}">Retry</button>` : ''}<button class="x" data-del="${j.id}" title="Remove">✕</button></span></div>
-            <div class="muted">${esc(SP.jobLine(j))}</div>
-            <div class="bar"><div style="width:${j.status === 'done' ? 100 : Math.floor((j.progress || 0) * 100)}%"></div></div>
-          </div>`,
-        )
-        .join('')
-    : '<div class="muted">Nothing prefetched yet.</div>';
+  $('jobs').innerHTML = SP.jobsListHtml(r.data.jobs, { expanded });
 }
 
 document.addEventListener('click', async (e) => {

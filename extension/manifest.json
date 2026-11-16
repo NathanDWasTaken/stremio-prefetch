@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Stremio Prefetch",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Prefetch buttons and auto-prefetch of the next episode for Stremio Web, backed by the stremio-prefetch helper.",
   "icons": {
     "16": "icons/icon16.png",
