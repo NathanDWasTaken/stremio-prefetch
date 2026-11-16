@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font: 13px system-ui, sans-serif; padding: 8px 16px; min-width: 420px; max-width: 520px; }
+    label { display: block; margin: 10px 0 3px; font-weight: 600; }
+    input[type=text], input[type=number] { width: 100%; padding: 5px; box-sizing: border-box; }
+    input[type=number] { width: 90px; }
+    .check { font-weight: normal; }
+    .hint { color: #777; font-size: 12px; }
+    #result { margin-top: 10px; white-space: pre-wrap; }
+    button { margin-top: 12px; padding: 6px 14px; }
+  </style>
+</head>
+<body>
+  <h2>Stremio Prefetch settings</h2>
+  <label for="helperUrl">Helper URL</label>
+  <input type="text" id="helperUrl" placeholder="http://192.168.178.64:11480">
+  <div class="hint">The machine running the helper and the Stremio server.</div>
+
+  <label for="token">Token</label>
+  <input type="text" id="token" placeholder="from helper/data/config.json">
+
+  <label class="check"><input type="checkbox" id="streamButtons"> "Prefetch on server" in the stream right-click menu, and status tags on prefetched streams</label>
+  <label class="check"><input type="checkbox" id="autoNext"> Auto-prefetch upcoming episodes while watching a series</label>
+
+  <label for="autoNextCount">Episodes to prefetch ahead</label>
+  <input type="number" id="autoNextCount" min="1" max="10">
+
+  <label for="autoNextDelaySec">Start auto-prefetch after watching (seconds)</label>
+  <input type="number" id="autoNextDelaySec" min="0" max="3600">
+  <div class="hint">Gives the episode you're watching time to buffer before bandwidth is shared.</div>
+
+  <button id="save">Save &amp; test connection</button>
+  <div id="result"></div>
+
+  <script src="shared.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

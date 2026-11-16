@@ -1,0 +1,5 @@
+helper/data/
+*.xpi
+web-ext-artifacts/
+node_modules/
+logs/
