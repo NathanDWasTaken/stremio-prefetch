@@ -394,13 +394,64 @@
         background: #1b1a2b; color: #eee; border: 1px solid #44406a; border-radius: 8px; padding: 8px 14px;
         font: 13px system-ui, sans-serif; box-shadow: 0 6px 20px rgba(0,0,0,.5); max-width: min(360px, 80vw); white-space: pre-wrap; }
       .toast.error { border-color: #e5484d; }
+
+      /* Auto-prefetch badge: a round icon instead of a text toast. */
+      .badge { position: fixed; right: 24px; bottom: 110px; z-index: 2147483647; width: 44px; height: 44px;
+        border-radius: 50%; background: #1b1a2b; border: 1px solid #44406a; box-shadow: 0 6px 20px rgba(0,0,0,.5);
+        display: grid; place-items: center; color: #c9b8ff; pointer-events: none;
+        animation: sp-in .25s ease-out; transition: opacity .4s, transform .4s; }
+      .badge.hidden { display: none; }
+      .badge.out { opacity: 0; transform: scale(.6); }
+      .badge svg { width: 24px; height: 24px; overflow: visible; }
+      .badge .ring { position: absolute; inset: -1px; border-radius: 50%; border: 2px solid transparent;
+        border-top-color: #7b5bf5; animation: sp-spin .9s linear infinite; }
+      .badge.queued { border-color: #7b5bf5; }
+      .badge.queued .arrow { animation: sp-drop 1.1s ease-in-out infinite; }
+      .badge.done { color: #46c37b; border-color: #46c37b; }
+      .badge.done svg { animation: sp-pop .35s ease-out; }
+      .badge.error { color: #e5484d; border-color: #e5484d; animation: sp-in .25s ease-out, sp-shake .4s .25s; }
+      @keyframes sp-in { from { opacity: 0; transform: scale(.6); } }
+      @keyframes sp-spin { to { transform: rotate(360deg); } }
+      @keyframes sp-drop { 0% { transform: translateY(-7px); opacity: 0; } 30%, 70% { opacity: 1; }
+        100% { transform: translateY(3px); opacity: 0; } }
+      @keyframes sp-pop { 0% { transform: scale(.3); } 70% { transform: scale(1.2); } 100% { transform: scale(1); } }
+      @keyframes sp-shake { 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+      @media (prefers-reduced-motion: reduce) { .badge, .badge * { animation: none !important; } }
     </style>
     <div class="panel hidden"></div>
     <div class="toast hidden"></div>
+    <div class="badge hidden"></div>
   `;
   const panel = shadow.querySelector('.panel');
   const toastEl = shadow.querySelector('.toast');
+  const badgeEl = shadow.querySelector('.badge');
   let toastTimer = null;
+  let badgeTimer = null;
+
+  const SVG = (body) =>
+    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+  const ARROW = '<g class="arrow"><path d="M12 4v10"/><path d="M7.5 10 12 14.5 16.5 10"/></g>';
+  const BADGE_ICONS = {
+    busy: `<div class="ring"></div>${SVG(ARROW)}`,
+    queued: SVG(`${ARROW}<path d="M5 19h14"/>`),
+    done: SVG('<path d="M5 12.5 10 17.5 19 7"/>'),
+    error: SVG('<path d="M12 6v8"/><path d="M12 18.5v.01"/>'),
+  };
+
+  // kind: busy | queued | done | error. `label` is for screen readers.
+  // Stays up while busy; the result hides itself after a few seconds.
+  function badge(kind, label) {
+    clearTimeout(badgeTimer);
+    badgeEl.className = `badge ${kind}`;
+    badgeEl.innerHTML = BADGE_ICONS[kind];
+    badgeEl.setAttribute('role', 'status');
+    badgeEl.setAttribute('aria-label', label);
+    if (kind === 'busy') return;
+    badgeTimer = setTimeout(() => {
+      badgeEl.classList.add('out');
+      badgeTimer = setTimeout(() => badgeEl.classList.add('hidden'), 400);
+    }, 4000);
+  }
 
   function toast(text, isError) {
     toastEl.textContent = text;
@@ -587,18 +638,18 @@
     return s;
   }
 
-  // A few words for the toast while watching; details stay in the panel.
-  function shortSummary(data) {
+  // [kind, label] for the badge shown while watching; details stay in the panel.
+  function badgeFor(data) {
     const results = data.results || [];
     const added = results.filter((x) => x.ok && x.added);
     if (added.length === 1) {
       const ep = /S\d+E\d+/i.exec(added[0].label || '');
-      return `Prefetching ${ep ? ep[0].toUpperCase() : 'next episode'}`;
+      return ['queued', `Prefetching ${ep ? ep[0].toUpperCase() : 'next episode'}`];
     }
-    if (added.length) return `Prefetching ${added.length} episodes`;
-    if (results.some((x) => x.ok)) return 'Next episode already prefetched';
-    if (results.length) return 'Prefetch failed';
-    return 'Nothing to prefetch';
+    if (added.length) return ['queued', `Prefetching ${added.length} episodes`];
+    if (results.some((x) => x.ok)) return ['done', 'Next episode already prefetched'];
+    if (results.length) return ['error', 'Prefetch failed'];
+    return ['done', 'Nothing to prefetch'];
   }
 
   async function refresh() {
@@ -934,11 +985,15 @@
       if (SP.parseRoute(location.hash).videoId !== videoId) return;
       autoQueued.add(videoId);
       autoState = 'Queuing next episode…';
+      badge('busy', autoState);
       render();
       const r = await queue({ nextAfter: videoId, count: settings.autoNextCount }, currentTorrent);
       autoState = r.ok ? `Auto-prefetch: ${summarize(r.data)}` : `Auto-prefetch failed: ${r.error}`;
-      if (r.ok) toast(shortSummary(r.data));
-      else autoQueued.delete(videoId);
+      if (r.ok) badge(...badgeFor(r.data));
+      else {
+        badge('error', autoState);
+        autoQueued.delete(videoId);
+      }
       render();
     }, delay * 1000);
   }
