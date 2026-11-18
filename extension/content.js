@@ -390,9 +390,9 @@
       .muted { color: #999; font-size: 12px; }
       .section { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: #aaa; margin: 4px 0; }
       ${SP.JOBS_CSS}
-      .toast { position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%); z-index: 2147483647;
-        background: #1b1a2b; color: #eee; border: 1px solid #44406a; border-radius: 8px; padding: 10px 16px;
-        font: 13px system-ui, sans-serif; box-shadow: 0 6px 20px rgba(0,0,0,.5); max-width: 80vw; white-space: pre-wrap; }
+      .toast { position: fixed; right: 24px; bottom: 110px; z-index: 2147483647;
+        background: #1b1a2b; color: #eee; border: 1px solid #44406a; border-radius: 8px; padding: 8px 14px;
+        font: 13px system-ui, sans-serif; box-shadow: 0 6px 20px rgba(0,0,0,.5); max-width: min(360px, 80vw); white-space: pre-wrap; }
       .toast.error { border-color: #e5484d; }
     </style>
     <div class="panel hidden"></div>
@@ -585,6 +585,20 @@
     if (added && data.basis) s += `\nSource: ${data.basis}`;
     if (failed.length) s += `\nFailed: ${failed.map((x) => `${x.label}: ${x.reason}`).join('\n')}`;
     return s;
+  }
+
+  // A few words for the toast while watching; details stay in the panel.
+  function shortSummary(data) {
+    const results = data.results || [];
+    const added = results.filter((x) => x.ok && x.added);
+    if (added.length === 1) {
+      const ep = /S\d+E\d+/i.exec(added[0].label || '');
+      return `Prefetching ${ep ? ep[0].toUpperCase() : 'next episode'}`;
+    }
+    if (added.length) return `Prefetching ${added.length} episodes`;
+    if (results.some((x) => x.ok)) return 'Next episode already prefetched';
+    if (results.length) return 'Prefetch failed';
+    return 'Nothing to prefetch';
   }
 
   async function refresh() {
@@ -923,7 +937,7 @@
       render();
       const r = await queue({ nextAfter: videoId, count: settings.autoNextCount }, currentTorrent);
       autoState = r.ok ? `Auto-prefetch: ${summarize(r.data)}` : `Auto-prefetch failed: ${r.error}`;
-      if (r.ok) toast(autoState);
+      if (r.ok) toast(shortSummary(r.data));
       else autoQueued.delete(videoId);
       render();
     }, delay * 1000);
