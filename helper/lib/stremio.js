@@ -12,10 +12,29 @@ const path = require('path');
 
 const IH_RE = /^[a-f0-9]{40}$/;
 
+// Used when a stream comes without trackers (Torrentio omits them for some
+// torrents, e.g. from 1337x). The server then only has DHT, which can find no
+// peers at all on some networks. The Stremio desktop app adds a default tracker
+// list in that case too; web.stremio.com does not.
+const DEFAULT_TRACKERS = [
+  'udp://tracker.opentrackr.org:1337/announce',
+  'udp://open.stealth.si:80/announce',
+  'udp://tracker.torrent.eu.org:451/announce',
+  'udp://open.demonii.com:1337/announce',
+  'udp://exodus.desync.com:6969/announce',
+  'udp://explodie.org:6969/announce',
+  'udp://open.tracker.cl:1337/announce',
+  'udp://tracker.dler.org:6969/announce',
+  'http://tracker.renfei.net:8080/announce',
+].map((t) => `tracker:${t}`);
+
+const hasTracker = (sources) => (sources || []).some((s) => /^tracker:/.test(s));
+
 function normalizeSources(sources, infoHash) {
   const out = (sources || [])
     .filter((s) => typeof s === 'string' && s)
     .map((s) => (/^(tracker|dht):/.test(s) ? s : `tracker:${s}`));
+  if (!hasTracker(out)) out.push(...DEFAULT_TRACKERS);
   const dht = `dht:${infoHash}`;
   if (!out.includes(dht)) out.push(dht);
   return out;
@@ -28,6 +47,7 @@ class StremioServer {
 
   async create(infoHash, { sources, guess, fileMustInclude }, timeoutMs) {
     if (!IH_RE.test(infoHash)) throw new Error(`Invalid infoHash: ${infoHash}`);
+    await this.dropStaleEngine(infoHash);
     const body = {
       torrent: { infoHash },
       peerSearch: { sources: normalizeSources(sources, infoHash), min: 40, max: 150 },
@@ -44,6 +64,23 @@ class StremioServer {
     });
     if (!res.ok) throw new Error(`create failed: HTTP ${res.status}`);
     return res.json();
+  }
+
+  // The server only applies peerSearch when it creates an engine; later create
+  // calls reuse the existing engine as is. An engine that was started with DHT
+  // only (e.g. by web.stremio.com) and never got metadata would ignore our
+  // trackers, so remove it first. It has no data, so nothing is lost.
+  async dropStaleEngine(infoHash) {
+    try {
+      const res = await fetch(`${this.baseUrl}/${infoHash}/stats.json`, { signal: AbortSignal.timeout(5000) });
+      const stats = res.ok ? await res.json() : null;
+      if (!stats || stats.files) return;
+      const sources = (stats.opts && stats.opts.peerSearch && stats.opts.peerSearch.sources) || [];
+      if (hasTracker(sources)) return;
+      await fetch(`${this.baseUrl}/${infoHash}/remove`, { signal: AbortSignal.timeout(5000) });
+    } catch {
+      // Best effort: create still works, just possibly without our trackers.
+    }
   }
 
   // Opens the stream and closes it as soon as headers arrive. This marks the
